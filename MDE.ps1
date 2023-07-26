@@ -152,9 +152,6 @@ Function Get-RunningMachineActions() {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$True)]
-        [string]
-        $vmid,
-        [Parameter(Mandatory=$True)]
         [PSCustomObject]
         $tk
     )
