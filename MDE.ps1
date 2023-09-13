@@ -5,9 +5,9 @@
     1. register an application and give access to the required WindowsDefenderATP API https://learn.microsoft.com/en-us/microsoft-365/security/defender-endpoint/management-apis?view=o365-worldwide
     2. configure AuthData_sample.json file with the SP authentication details
     3. rename AuthData_sample.json to AuthData.json
-    4. run the script .\MDE.ps1
+    4. run the script ". .\MDE.ps1"
     5. authenticate to service with $token=Authenticate
-    6. when running functions, give the access token as argument Get-RunningMachineActions -tk $token.access_token
+    6. when running functions, give the access token as argument Get-RunningMachineActions -tk $token
     
     Note: requires PS 7
     .INPUTS
