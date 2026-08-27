@@ -1,3 +1,29 @@
+<#
+.SYNOPSIS
+Exports Microsoft Defender for Endpoint device and software inventory.
+
+.DESCRIPTION
+The app registration used by this script requires these WindowsDefenderATP
+application permissions, with tenant administrator consent granted:
+
+    Machine.Read.All       Read all machine profiles
+    Software.Read.All      Read Threat and Vulnerability Management software information
+    Vulnerability.Read.All Read Threat and Vulnerability Management vulnerability information
+
+Vulnerability.Read.All is required only when using -IncludeVulnerabilities.
+
+To use the default authentication method, copy AuthData_sample.json to
+AuthData.json in the same directory as this script and replace each placeholder
+with the app registration's tenant ID, client ID, and client secret. AuthData.json
+is excluded by this repository's .gitignore; do not commit or share it.
+
+.EXAMPLE
+Copy-Item .\AuthData_sample.json .\AuthData.json
+.\Export-defenderInventory.ps1
+
+.EXAMPLE
+.\Export-defenderInventory.ps1 -IncludeVulnerabilities
+#>
 [CmdletBinding(DefaultParameterSetName = 'AuthData')]
 param(
     [Parameter(ParameterSetName = 'AuthData')]
