@@ -1,5 +1,8 @@
-[CmdletBinding(DefaultParameterSetName = 'ClientCredentials')]
+[CmdletBinding(DefaultParameterSetName = 'AuthData')]
 param(
+    [Parameter(ParameterSetName = 'AuthData')]
+    [string]$AuthDataPath = (Join-Path $PSScriptRoot 'AuthData.json'),
+
     [Parameter(Mandatory, ParameterSetName = 'ClientCredentials')]
     [string]$TenantId,
 
@@ -41,13 +44,35 @@ function Get-AccessToken {
         return ConvertFrom-SecureValue -Value $AccessToken
     }
 
-    $plainClientSecret = ConvertFrom-SecureValue -Value $ClientSecret
+    if ($PSCmdlet.ParameterSetName -eq 'AuthData') {
+        if (-not (Test-Path -LiteralPath $AuthDataPath -PathType Leaf)) {
+            throw "Authentication data file not found: $AuthDataPath"
+        }
+
+        $authData = Get-Content -LiteralPath $AuthDataPath -Raw | ConvertFrom-Json
+        $missingFields = @('tenantID', 'clientID', 'clientSecret').Where({
+            -not $authData.PSObject.Properties[$_] -or [string]::IsNullOrWhiteSpace($authData.$_)
+        })
+        if ($missingFields.Count -gt 0) {
+            throw "Authentication data file is missing required value(s): $($missingFields -join ', ')"
+        }
+
+        $requestTenantId = $authData.tenantID
+        $requestClientId = $authData.clientID
+        $plainClientSecret = $authData.clientSecret
+    }
+    else {
+        $requestTenantId = $TenantId
+        $requestClientId = $ClientId
+        $plainClientSecret = ConvertFrom-SecureValue -Value $ClientSecret
+    }
+
     try {
         $tokenResponse = Invoke-RestMethod -Method Post `
-            -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" `
+            -Uri "https://login.microsoftonline.com/$requestTenantId/oauth2/v2.0/token" `
             -ContentType 'application/x-www-form-urlencoded' `
             -Body @{
-                client_id     = $ClientId
+                client_id     = $requestClientId
                 client_secret = $plainClientSecret
                 scope         = 'https://api.securitycenter.microsoft.com/.default'
                 grant_type    = 'client_credentials'
@@ -56,6 +81,7 @@ function Get-AccessToken {
     }
     finally {
         $plainClientSecret = $null
+        $authData = $null
     }
 }
 
