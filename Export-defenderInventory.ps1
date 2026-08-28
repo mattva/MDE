@@ -65,6 +65,24 @@ function ConvertFrom-SecureValue {
     }
 }
 
+function Get-OptionalPropertyValue {
+    param(
+        [AllowNull()][object]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+
+    return $property.Value
+}
+
 function Get-AccessToken {
     if ($PSCmdlet.ParameterSetName -eq 'AccessToken') {
         return ConvertFrom-SecureValue -Value $AccessToken
@@ -167,7 +185,7 @@ function Get-DefenderPagedCollection {
 
 function Write-CsvResult {
     param(
-        [Parameter(Mandatory)][object[]]$Rows,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows,
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string[]]$EmptyHeaders
     )
@@ -213,15 +231,15 @@ foreach ($machine in $machines) {
             $softwareRows.Add([PSCustomObject]@{
                 MachineId      = $machine.id
                 DeviceName     = $machine.computerDnsName
-                SoftwareId     = $software.id
-                Name           = $software.name
-                Vendor         = $software.vendor
-                Version        = $software.version
-                Weaknesses     = $software.weaknesses
-                PublicExploit  = $software.publicExploit
-                ActiveAlert    = $software.activeAlert
-                ExposedMachines = $software.exposedMachines
-                ImpactScore    = $software.impactScore
+                SoftwareId     = Get-OptionalPropertyValue -InputObject $software -Name 'id'
+                Name           = Get-OptionalPropertyValue -InputObject $software -Name 'name'
+                Vendor         = Get-OptionalPropertyValue -InputObject $software -Name 'vendor'
+                Version        = Get-OptionalPropertyValue -InputObject $software -Name 'version'
+                Weaknesses     = Get-OptionalPropertyValue -InputObject $software -Name 'weaknesses'
+                PublicExploit  = Get-OptionalPropertyValue -InputObject $software -Name 'publicExploit'
+                ActiveAlert    = Get-OptionalPropertyValue -InputObject $software -Name 'activeAlert'
+                ExposedMachines = Get-OptionalPropertyValue -InputObject $software -Name 'exposedMachines'
+                ImpactScore    = Get-OptionalPropertyValue -InputObject $software -Name 'impactScore'
             })
         }
     }
