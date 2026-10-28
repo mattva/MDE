@@ -21,6 +21,18 @@ limit are rejected to avoid silently exporting truncated data.
 Historical device IDs are consolidated under MergedToDeviceId, the most recent
 device ID, across device, software, and vulnerability output.
 
+DeviceType optionally includes only the specified DeviceInfo device types (for example,
+Server, Workstation, or Mobile), using case-insensitive exact matching. Omit it to
+include all types. It combines with DeviceCategory and applies to Defender devices,
+software, and vulnerabilities; Azure Resource Graph inventory is not filtered.
+
+DevicePlatform similarly includes only the specified DeviceInfo OSPlatform values
+(for example, Windows11, Linux, Android, or iOS). Matching is case-insensitive;
+* matches zero or more characters and ? matches exactly one character. Other
+characters are literal, and patterns match the entire platform value. Omitting
+it includes all platforms. It combines with DeviceCategory and
+DeviceType and does not filter Azure Resource Graph inventory.
+
 .EXAMPLE
 .\Export-DefenderInventoryGraph.ps1
 
@@ -35,6 +47,24 @@ Exports endpoint devices, software, and vulnerabilities.
 .\Export-DefenderInventoryGraph.ps1 -DeviceCategory IoT -Timespan P7D
 
 Exports IoT inventory observed during the past seven days.
+
+.EXAMPLE
+.\Export-DefenderInventoryGraph.ps1 -DeviceCategory Endpoint -DeviceType Server,Mobile
+
+Exports Defender endpoint servers and mobile devices and their software inventory.
+Azure inventory remains unfiltered in the default Combined mode.
+
+.EXAMPLE
+.\Export-DefenderInventoryGraph.ps1 -DeviceType Server -DevicePlatform Linux,WindowsServer2022
+
+Exports Defender servers on the specified platforms and their software inventory.
+Azure inventory remains unfiltered in the default Combined mode.
+
+.EXAMPLE
+.\Export-DefenderInventoryGraph.ps1 -DevicePlatform 'Windows*',Linux
+
+Exports Defender Windows and Linux devices and their software inventory.
+Azure inventory remains unfiltered in the default Combined mode.
 
 .EXAMPLE
 .\Export-DefenderInventoryGraph.ps1 -InventorySource Azure -SubscriptionId '<subscription-id>'
@@ -71,6 +101,14 @@ param(
 
     [ValidateSet('All', 'Endpoint', 'IoT')]
     [string]$DeviceCategory = 'All',
+
+    [ValidateNotNullOrEmpty()]
+    [ValidatePattern('\S')]
+    [string[]]$DeviceType,
+
+    [ValidateNotNullOrEmpty()]
+    [ValidatePattern('\S')]
+    [string[]]$DevicePlatform,
 
     [switch]$IncludeVulnerabilities,
 
@@ -717,6 +755,31 @@ else {
     "| where DeviceCategory == '$DeviceCategory'"
 }
 
+$deviceTypeFilter = if ($null -eq $DeviceType -or $DeviceType.Count -eq 0) {
+    ''
+}
+else {
+    $deviceTypesJson = ConvertTo-Json -InputObject $DeviceType -Compress
+    "| where DeviceType in~ (dynamic($deviceTypesJson))"
+}
+
+$devicePlatformFilter = if ($null -eq $DevicePlatform -or $DevicePlatform.Count -eq 0) {
+    ''
+}
+elseif (@($DevicePlatform -match '[*?]').Count -gt 0) {
+    $platformPatterns = foreach ($platform in $DevicePlatform) {
+        $escapedPlatform = [regex]::Replace($platform, '([\\.^$|()\[\]{}+])', '\$1')
+        $escapedPlatform.Replace('*', '.*').Replace('?', '.')
+    }
+    $platformRegex = '(?i)\A(?:' + ($platformPatterns -join '|') + ')\z'
+    $platformRegexJson = ConvertTo-Json -InputObject $platformRegex -Compress
+    "| where OSPlatform matches regex $platformRegexJson"
+}
+else {
+    $devicePlatformsJson = ConvertTo-Json -InputObject $DevicePlatform -Compress
+    "| where OSPlatform in~ (dynamic($devicePlatformsJson))"
+}
+
 $deviceQuery = @"
 DeviceInfo
 | summarize arg_max(Timestamp, *) by DeviceId
@@ -726,6 +789,8 @@ DeviceInfo
     column_ifexists('MergedToDeviceId', ''))
 | summarize arg_max(Timestamp, *) by CanonicalDeviceId
 $categoryFilter
+$deviceTypeFilter
+$devicePlatformFilter
 | project Timestamp, DeviceId = CanonicalDeviceId, DeviceName,
     MergedDeviceIds = tostring(column_ifexists('MergedDeviceIds', '')),
     DeviceCategory = column_ifexists('DeviceCategory', ''),
@@ -753,8 +818,10 @@ let LatestDeviceIds = DeviceInfo
     DeviceId,
     column_ifexists('MergedToDeviceId', ''));
 let CanonicalDevices = LatestDeviceIds
-| summarize arg_max(Timestamp, DeviceName, DeviceCategory, DeviceType) by CanonicalDeviceId
+| summarize arg_max(Timestamp, DeviceName, DeviceCategory, DeviceType, OSPlatform) by CanonicalDeviceId
 $categoryFilter
+$deviceTypeFilter
+$devicePlatformFilter
 | where CanonicalDeviceId in (InventoryDeviceIds)
 | project CanonicalDeviceId, InventoryDeviceName = DeviceName, DeviceCategory, DeviceType;
 let SelectedDevices = LatestDeviceIds
