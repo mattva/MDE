@@ -13,9 +13,10 @@ AuthData.json in the same directory as this script and replace each placeholder
 with the app registration's tenant ID, client ID, and client secret. AuthData.json
 is excluded by this repository's .gitignore; do not commit or share it.
 
-Advanced Hunting returns data observed during the selected timespan. A result set
-that reaches 100,000 rows is rejected to avoid silently exporting truncated data.
-Use a narrower device category or timespan when that occurs.
+Advanced Hunting returns data observed during the selected timespan. Software and
+vulnerability queries run in device batches, splitting batches that reach the
+100,000-row limit. Device queries, or a single device's inventory, that reach the
+limit are rejected to avoid silently exporting truncated data.
 
 Historical device IDs are consolidated under MergedToDeviceId, the most recent
 device ID, across device, software, and vulnerability output.
@@ -189,7 +190,7 @@ function Get-HttpErrorDetails {
 
     $statusCode = 0
     $retryAfter = $null
-    $responseBody = $ErrorRecord.ErrorDetails.Message
+    $responseBody = Get-OptionalPropertyValue -InputObject $ErrorRecord.ErrorDetails -Name 'Message'
     $responseProperty = $ErrorRecord.Exception.PSObject.Properties['Response']
     if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
         $response = $responseProperty.Value
@@ -248,7 +249,12 @@ function Invoke-HuntingQuery {
             }
             $rows = @($response.results)
             if ($rows.Count -ge $resultLimit) {
-                throw "$Name query returned $($rows.Count) rows and may be truncated. Narrow DeviceCategory or Timespan."
+                $limitError = [Management.Automation.ErrorRecord]::new(
+                    [InvalidOperationException]::new("$Name query returned $($rows.Count) rows and may be truncated. Narrow DeviceCategory or Timespan."),
+                    'HuntingQueryResultLimit',
+                    [Management.Automation.ErrorCategory]::LimitsExceeded,
+                    $Name)
+                $PSCmdlet.ThrowTerminatingError($limitError)
             }
             return $rows
         }
@@ -272,6 +278,48 @@ function Invoke-HuntingQuery {
             Start-Sleep -Seconds $delaySeconds
         }
     }
+}
+
+function Invoke-BatchedHuntingQuery {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Query,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DeviceIds
+    )
+
+    $pendingBatches = [Collections.Generic.Queue[string[]]]::new()
+    for ($offset = 0; $offset -lt $DeviceIds.Count; $offset += 100) {
+        $end = [Math]::Min($offset + 99, $DeviceIds.Count - 1)
+        $pendingBatches.Enqueue([string[]]$DeviceIds[$offset..$end])
+    }
+
+    $rows = [Collections.Generic.List[object]]::new()
+    while ($pendingBatches.Count -gt 0) {
+        $batch = $pendingBatches.Dequeue()
+        $idJson = ConvertTo-Json -InputObject $batch -Compress
+        $batchQuery = "let InventoryDeviceIds = dynamic($idJson);`n$Query"
+        try {
+            $batchRows = @(Invoke-HuntingQuery -Name "$Name ($($batch.Count) devices)" -Query $batchQuery)
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -notlike 'HuntingQueryResultLimit*') {
+                throw
+            }
+            if ($batch.Count -eq 1) {
+                throw "$Name for device '$($batch[0])' reached the $resultLimit-row limit. No complete inventory can be exported for this device."
+            }
+
+            $midpoint = [int][Math]::Floor($batch.Count / 2)
+            Write-Warning "$Name batch reached the row limit. Splitting $($batch.Count) devices into smaller batches."
+            $pendingBatches.Enqueue([string[]]$batch[0..($midpoint - 1)])
+            $pendingBatches.Enqueue([string[]]$batch[$midpoint..($batch.Count - 1)])
+            continue
+        }
+
+        foreach ($row in $batchRows) { $rows.Add($row) }
+    }
+
+    return $rows.ToArray()
 }
 
 function Invoke-ResourceGraphQuery {
@@ -707,6 +755,7 @@ let LatestDeviceIds = DeviceInfo
 let CanonicalDevices = LatestDeviceIds
 | summarize arg_max(Timestamp, DeviceName, DeviceCategory, DeviceType) by CanonicalDeviceId
 $categoryFilter
+| where CanonicalDeviceId in (InventoryDeviceIds)
 | project CanonicalDeviceId, InventoryDeviceName = DeviceName, DeviceCategory, DeviceType;
 let SelectedDevices = LatestDeviceIds
 | project SourceDeviceId = DeviceId, CanonicalDeviceId
@@ -809,9 +858,14 @@ try {
             $script:headers = @{ Authorization = "Bearer $graphToken"; Accept = 'application/json' }
         }
         $defenderDeviceRows = @(Invoke-HuntingQuery -Name 'device inventory' -Query $deviceQuery)
-        $softwareRows = @(Invoke-HuntingQuery -Name 'software inventory' -Query $softwareQuery)
+        $inventoryDeviceIds = @($defenderDeviceRows | Select-Object -ExpandProperty DeviceId -Unique)
+        $softwareRows = @(Invoke-BatchedHuntingQuery -Name 'software inventory' -Query $softwareQuery `
+            -DeviceIds $inventoryDeviceIds |
+            Sort-Object DeviceName, SoftwareVendor, SoftwareName, SoftwareVersion)
         if ($IncludeVulnerabilities) {
-            $vulnerabilityRows = @(Invoke-HuntingQuery -Name 'vulnerability inventory' -Query $vulnerabilityQuery)
+            $vulnerabilityRows = @(Invoke-BatchedHuntingQuery -Name 'vulnerability inventory' -Query $vulnerabilityQuery `
+                -DeviceIds $inventoryDeviceIds |
+                Sort-Object DeviceName, SoftwareVendor, SoftwareName, CveId)
         }
     }
 
